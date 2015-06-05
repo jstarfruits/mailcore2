@@ -155,8 +155,10 @@ MCO_SYNTHESIZE_NSCODING
 - (void) enumerateIndexes:(void (^)(uint64_t idx))block
 {
     MCORange * ranges = [self allRanges];
-    for(unsigned int i = 0 ; i < [self rangesCount] ; i ++) {
-        for(uint64_t k = 0 ; k <= ranges[i].length ; k ++) {
+    unsigned int cnt = [self rangesCount];
+    for(unsigned int i = 0 ; i < cnt ; i ++) {
+        uint64_t len = ranges[i].length;
+        for(uint64_t k = 0 ; k <= len ; k ++) {
             block(ranges[i].location + k);
         }
     }
@@ -166,7 +168,8 @@ MCO_SYNTHESIZE_NSCODING
 {
     NSMutableIndexSet * result = [NSMutableIndexSet indexSet];
     MCORange * allRanges = [self allRanges];
-    for(unsigned int i = 0 ; i < [self rangesCount] ; i ++) {
+    unsigned int cnt = [self rangesCount];
+    for(unsigned int i = 0 ; i < cnt; i ++) {
         [result addIndexesInRange:NSMakeRange((NSUInteger) allRanges[i].location, (NSUInteger) allRanges[i].length + 1)];
     }
     return result;
