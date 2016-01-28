@@ -3261,7 +3261,7 @@
 		C64EA52E169E772200778456 /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
-				LastUpgradeCheck = 0610;
+				LastUpgradeCheck = 0700;
 				ORGANIZATIONNAME = MailCore;
 				TargetAttributes = {
 					C600B6131A242C3F000728F1 = {
