@@ -721,12 +721,7 @@ struct mailimf_fields * MessageHeader::createIMFFieldsAndFilterBcc(bool filterBc
             imfSubject = strdup(data->bytes());
         }
     }
-    
-    if ((imfTo == NULL) && (imfCc == NULL) && (imfBcc == NULL)) {
-        imfTo = mailimf_address_list_new_empty();
-        mailimf_address_list_add_parse(imfTo, (char *) "Undisclosed recipients:;");
-    }
-    
+
     fields = mailimf_fields_new_with_data_all(imfDate,
         imfFrom,
         NULL /* sender */,
@@ -1024,12 +1019,14 @@ Array * MessageHeader::recipientWithReplyAll(bool replyAll, bool includeTo, bool
                 }
                 if ((from() != NULL) && address->mailbox()->isEqualCaseInsensitive(from()->mailbox())) {
                     recipient->addObjectsFromArray(replyTo());
-                    for(unsigned int j = 0 ; j < replyTo()->count() ; j ++) {
-                        Address * rtAddress = (Address *) replyTo()->objectAtIndex(j);
-                        if (addedAddresses->containsObject(rtAddress->mailbox()->lowercaseString())) {
-                            continue;
+                    if (replyTo() != NULL) {
+                        for(unsigned int j = 0 ; j < replyTo()->count() ; j ++) {
+                            Address * rtAddress = (Address *) replyTo()->objectAtIndex(j);
+                            if (addedAddresses->containsObject(rtAddress->mailbox()->lowercaseString())) {
+                                continue;
+                            }
+                            addedAddresses->addObject(rtAddress->mailbox()->lowercaseString());
                         }
-                        addedAddresses->addObject(rtAddress->mailbox()->lowercaseString());
                     }
                 }
                 else {
@@ -1203,7 +1200,7 @@ MessageHeader * MessageHeader::forwardHeader()
         subjectValue = MCSTR("Fw: ");
     }
     else {
-        subjectValue = MCSTR("Fw: ")->stringByAppendingString(subject());
+        subjectValue = MCSTR("Fw: ")->stringByAppendingString(subject()->extractedSubjectAndKeepBracket(true));
     }
     if (references() != NULL) {
         referencesValue = (Array *) (references()->copy());

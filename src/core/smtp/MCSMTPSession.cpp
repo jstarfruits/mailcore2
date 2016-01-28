@@ -189,6 +189,10 @@ static void logger(mailsmtp * smtp, int log_type, const char * buffer, size_t si
         return;
     
     ConnectionLogType type = getConnectionType(log_type);
+    if ((int) type == -1) {
+        // in case of MAILSTREAM_LOG_TYPE_INFO_RECEIVED or MAILSTREAM_LOG_TYPE_INFO_SENT.
+        return;
+    }
     bool isBuffer = isBufferFromLogType(log_type);
     
     if (isBuffer) {
@@ -525,7 +529,13 @@ void SMTPSession::login(ErrorCode * pError)
             if (utf8Username == NULL) {
                 utf8Username = "";
             }
-            r = mailsmtp_oauth2_authenticate(mSmtp, utf8Username, MCUTF8(mOAuth2Token));
+            
+            if (mOAuth2Token == NULL) {
+                r = MAILSMTP_ERROR_STREAM;
+            }
+            else {
+                r = mailsmtp_oauth2_authenticate(mSmtp, utf8Username, MCUTF8(mOAuth2Token));
+            }
             break;
         }
         
@@ -534,7 +544,13 @@ void SMTPSession::login(ErrorCode * pError)
             if (utf8Username == NULL) {
                 utf8Username = "";
             }
-            r = mailsmtp_oauth2_outlook_authenticate(mSmtp, utf8Username, MCUTF8(mOAuth2Token));
+            
+            if (mOAuth2Token == NULL) {
+                r = MAILSMTP_ERROR_STREAM;
+            } 
+            else {
+                r = mailsmtp_oauth2_outlook_authenticate(mSmtp, utf8Username, MCUTF8(mOAuth2Token));
+            }
             break;
         }
     }
@@ -668,17 +684,22 @@ void SMTPSession::sendMessage(Address * from, Array * recipients, Data * message
         goto err;
     }
     else if (r != MAILSMTP_NO_ERROR) {
-        if ((responseCode == 550) && (response != NULL) && (response->hasPrefix(MCSTR("5.3.4")))) {
-            * pError = ErrorNeedsConnectToWebmail;
-            goto err;
+        if ((responseCode == 550) && (response != NULL)) {
+            if (response->hasPrefix(MCSTR("5.3.4 "))) {
+                * pError = ErrorNeedsConnectToWebmail;
+                goto err;
+            }
+            else if (response->hasPrefix(MCSTR("5.7.1 "))) {
+                * pError = ErrorSendMessageNotAllowed;
+                goto err;
+            }
         }
-        else {
-            * pError = ErrorSendMessage;
-            MC_SAFE_REPLACE_COPY(String, mLastSMTPResponse, response);
-            mLastLibetpanError = r;
-            mLastSMTPResponseCode = responseCode;
-            goto err;
-        }
+        
+        * pError = ErrorSendMessage;
+        MC_SAFE_REPLACE_COPY(String, mLastSMTPResponse, response);
+        mLastLibetpanError = r;
+        mLastSMTPResponseCode = responseCode;
+        goto err;
     }
 
     bodyProgress(messageData->length(), messageData->length());
@@ -703,7 +724,8 @@ Data * SMTPSession::dataWithFilteredBcc(Data * data)
     
     struct mailimf_fields * fields = msg->msg_fields;
     int col = 0;
-    
+
+    int hasRecipient = 0;
     str = mmap_string_new("");
     for(clistiter * cur = clist_begin(fields->fld_list) ; cur != NULL ; cur = clist_next(cur)) {
         struct mailimf_field * field = (struct mailimf_field *) clist_content(cur);
@@ -712,6 +734,17 @@ Data * SMTPSession::dataWithFilteredBcc(Data * data)
             clist_delete(fields->fld_list, cur);
             break;
         }
+        else if ((field->fld_type == MAILIMF_FIELD_TO) || (field->fld_type == MAILIMF_FIELD_CC) || (field->fld_type == MAILIMF_FIELD_BCC)) {
+            hasRecipient = 1;
+        }
+    }
+    if (!hasRecipient) {
+        struct mailimf_address_list * imfTo;
+        imfTo = mailimf_address_list_new_empty();
+        mailimf_address_list_add_parse(imfTo, (char *) "Undisclosed recipients:;");
+        struct mailimf_to * toField = mailimf_to_new(imfTo);
+        struct mailimf_field * field = mailimf_field_new(MAILIMF_FIELD_TO, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, toField, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+        mailimf_fields_add(fields, field);
     }
     mailimf_fields_write_mem(str, &col, fields);
     mmap_string_append(str, "\n");
