@@ -22,7 +22,7 @@
     MCORegisterClass(self, &typeid(nativeType));
 }
 
-- (id)init
+- (instancetype) init
 {
     mailcore::MessageBuilder * message = new mailcore::MessageBuilder();
     self = [super initWithMCMessage:message];
@@ -68,6 +68,15 @@ MCO_OBJC_SYNTHESIZE_STRING(setBoundaryPrefix, boundaryPrefix)
 - (NSData *) dataForEncryption
 {
     return MCO_OBJC_BRIDGE_GET(dataForEncryption);
+}
+
+- (BOOL) writeToFile:(NSString *)filename error:(NSError **)error
+{
+    mailcore::ErrorCode errorCode = MCO_NATIVE_INSTANCE->writeToFile(MCO_FROM_OBJC(mailcore::String, filename));
+    if (error) {
+        *error = [NSError mco_errorWithErrorCode:errorCode];
+    }
+    return errorCode == mailcore::ErrorNone;
 }
 
 - (NSString *) htmlRenderingWithDelegate:(id <MCOHTMLRendererDelegate>)delegate

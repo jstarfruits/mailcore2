@@ -57,9 +57,17 @@ namespace mailcore {
         
         virtual time_t fetchServerDate(ErrorCode * pError);
         
+        virtual void postMessage(Data * messageData, NNTPProgressCallback * callback, ErrorCode * pError);
+        virtual void postMessage(String * messagePath, NNTPProgressCallback * callback, ErrorCode * pError);
+        
         virtual void setConnectionLogger(ConnectionLogger * logger);
         virtual ConnectionLogger * connectionLogger();
         
+    public: // private
+        virtual void lockConnectionLogger();
+        virtual void unlockConnectionLogger();
+        virtual ConnectionLogger * connectionLoggerNoLock();
+
     private:
         String * mHostname;
         unsigned int mPort;
@@ -70,11 +78,16 @@ namespace mailcore {
         time_t mTimeout;
         
         newsnntp * mNNTP;
+        NNTPProgressCallback * mProgressCallback;
         int mState;
         
         ConnectionLogger * mConnectionLogger;
-        
+        pthread_mutex_t mConnectionLoggerLock;
+
         void init();
+        Data * dataWithFilteredBcc(Data * data);
+        static void body_progress(size_t current, size_t maximum, void * context);
+        void bodyProgress(unsigned int current, unsigned int maximum);
         bool checkCertificate();
         void setup();
         void unsetup();

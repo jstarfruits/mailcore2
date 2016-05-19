@@ -240,6 +240,17 @@ SMTPOperation * SMTPAsyncSession::sendMessageOperation(Address * from, Array * r
     return (SMTPOperation *) op->autorelease();
 }
 
+SMTPOperation * SMTPAsyncSession::sendMessageOperation(Address * from, Array * recipients,
+                                                       String * filename)
+{
+    SMTPSendWithDataOperation * op = new SMTPSendWithDataOperation();
+    op->setSession(this);
+    op->setMessageFilepath(filename);
+    op->setFrom(from);
+    op->setRecipients(recipients);
+    return (SMTPOperation *) op->autorelease();
+}
+
 SMTPOperation * SMTPAsyncSession::checkAccountOperation(Address * from)
 {
     SMTPCheckAccountOperation * op = new SMTPCheckAccountOperation();
@@ -266,13 +277,13 @@ void SMTPAsyncSession::setConnectionLogger(ConnectionLogger * logger)
 {
     pthread_mutex_lock(&mConnectionLoggerLock);
     mConnectionLogger = logger;
-    if (mConnectionLogger != NULL) {
+    pthread_mutex_unlock(&mConnectionLoggerLock);
+    if (logger != NULL) {
         mSession->setConnectionLogger(mInternalLogger);
     }
     else {
         mSession->setConnectionLogger(NULL);
     }
-    pthread_mutex_unlock(&mConnectionLoggerLock);
 }
 
 ConnectionLogger * SMTPAsyncSession::connectionLogger()

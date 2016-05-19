@@ -21,6 +21,12 @@ enum {
     STATE_LOGGEDIN,
 };
 
+#define CANCEL_LOCK() pthread_mutex_lock(&mCancelLock)
+#define CANCEL_UNLOCK() pthread_mutex_unlock(&mCancelLock)
+
+#define CAN_CANCEL_LOCK() pthread_mutex_lock(&mCanCancelLock)
+#define CAN_CANCEL_UNLOCK() pthread_mutex_unlock(&mCanCancelLock)
+
 void SMTPSession::init()
 {
     mHostname = NULL;
@@ -34,6 +40,8 @@ void SMTPSession::init()
     mCheckCertificateEnabled = true;
     mUseHeloIPEnabled = false;
     mShouldDisconnect = false;
+    mSendingCancelled = false;
+    mCanCancel = false;
     
     mSmtp = NULL;
     mProgressCallback = NULL;
@@ -42,6 +50,11 @@ void SMTPSession::init()
     mLastLibetpanError = 0;
     mLastSMTPResponseCode = 0;
     mConnectionLogger = NULL;
+    pthread_mutex_init(&mConnectionLoggerLock, NULL);
+    pthread_mutex_init(&mCancelLock, NULL);
+    pthread_mutex_init(&mCanCancelLock, NULL);
+
+    mOutlookServer = true;
 }
 
 SMTPSession::SMTPSession()
@@ -51,6 +64,9 @@ SMTPSession::SMTPSession()
 
 SMTPSession::~SMTPSession()
 {
+    pthread_mutex_destroy(&mConnectionLoggerLock);
+    pthread_mutex_destroy(&mCancelLock);
+    pthread_mutex_destroy(&mCanCancelLock);
     MC_SAFE_RELEASE(mLastSMTPResponse);
     MC_SAFE_RELEASE(mHostname);
     MC_SAFE_RELEASE(mUsername);
@@ -155,6 +171,12 @@ bool SMTPSession::checkCertificate()
     return mailcore::checkCertificate(mSmtp->stream, hostname());
 }
 
+void SMTPSession::setSendingCancelled(bool isCancelled) {
+    CANCEL_LOCK();
+    mSendingCancelled = isCancelled;
+    CANCEL_UNLOCK();
+}
+
 void SMTPSession::setUseHeloIPEnabled(bool enabled)
 {
     mUseHeloIPEnabled = enabled;
@@ -163,6 +185,16 @@ void SMTPSession::setUseHeloIPEnabled(bool enabled)
 bool SMTPSession::useHeloIPEnabled()
 {
     return mUseHeloIPEnabled;
+}
+
+String * SMTPSession::lastSMTPResponse()
+{
+    return mLastSMTPResponse;
+}
+
+int SMTPSession::lastSMTPResponseCode()
+{
+    return mLastSMTPResponseCode;
 }
 
 void SMTPSession::body_progress(size_t current, size_t maximum, void * context)
@@ -184,24 +216,31 @@ void SMTPSession::bodyProgress(unsigned int current, unsigned int maximum)
 static void logger(mailsmtp * smtp, int log_type, const char * buffer, size_t size, void * context)
 {
     SMTPSession * session = (SMTPSession *) context;
+    session->lockConnectionLogger();
     
-    if (session->connectionLogger() == NULL)
+    if (session->connectionLoggerNoLock() == NULL) {
+        session->unlockConnectionLogger();
         return;
+    }
     
     ConnectionLogType type = getConnectionType(log_type);
     if ((int) type == -1) {
         // in case of MAILSTREAM_LOG_TYPE_INFO_RECEIVED or MAILSTREAM_LOG_TYPE_INFO_SENT.
+        session->unlockConnectionLogger();
         return;
     }
     bool isBuffer = isBufferFromLogType(log_type);
     
     if (isBuffer) {
+        AutoreleasePool * pool = new AutoreleasePool();
         Data * data = Data::dataWithBytes(buffer, (unsigned int) size);
-        session->connectionLogger()->log(session, type, data);
+        session->connectionLoggerNoLock()->log(session, type, data);
+        pool->release();
     }
     else {
-        session->connectionLogger()->log(session, type, NULL);
+        session->connectionLoggerNoLock()->log(session, type, NULL);
     }
+    session->unlockConnectionLogger();
 }
 
 
@@ -221,6 +260,10 @@ void SMTPSession::unsetup()
 
 void SMTPSession::connectIfNeeded(ErrorCode * pError)
 {
+    // Clear out the last response from previous command.
+    MC_SAFE_RELEASE(mLastSMTPResponse);
+    mLastSMTPResponseCode = 0;
+
     if (mSmtp != NULL) {
         // In case pipelining is available, libetpan will disconnect the session.
         if (mSmtp->stream == NULL) {
@@ -245,11 +288,18 @@ void SMTPSession::connect(ErrorCode * pError)
     int r;
     
     setup();
-    
+
+    if (hostname() != NULL) {
+        if (hostname()->lowercaseString()->isEqual(MCSTR("smtp-mail.outlook.com"))) {
+            mOutlookServer = true;
+        }
+    }
+
     switch (mConnectionType) {
         case ConnectionTypeStartTLS:
             MCLog("connect %s %u", MCUTF8(hostname()), (unsigned int) port());
             r = mailsmtp_socket_connect(mSmtp, MCUTF8(hostname()), port());
+            saveLastResponse();
             if (r != MAILSMTP_NO_ERROR) {
                 * pError = ErrorConnection;
                 goto close;
@@ -261,6 +311,7 @@ void SMTPSession::connect(ErrorCode * pError)
             } else {
                 r = mailsmtp_init(mSmtp);
             }
+            saveLastResponse();
             if (r == MAILSMTP_ERROR_STREAM) {
                 * pError = ErrorConnection;
                 goto close;
@@ -272,6 +323,7 @@ void SMTPSession::connect(ErrorCode * pError)
             
             MCLog("start TLS");
             r = mailsmtp_socket_starttls(mSmtp);
+            saveLastResponse();
             if (r != MAILSMTP_NO_ERROR) {
                 * pError = ErrorStartTLSNotAvailable;
                 goto close;
@@ -288,6 +340,7 @@ void SMTPSession::connect(ErrorCode * pError)
             } else {
                 r = mailsmtp_init(mSmtp);
             }
+            saveLastResponse();
             if (r == MAILSMTP_ERROR_STREAM) {
                 * pError = ErrorConnection;
                 goto close;
@@ -301,6 +354,7 @@ void SMTPSession::connect(ErrorCode * pError)
             
         case ConnectionTypeTLS:
             r = mailsmtp_ssl_connect(mSmtp, MCUTF8(mHostname), port());
+            saveLastResponse();
             if (r != MAILSMTP_NO_ERROR) {
                 * pError = ErrorConnection;
                 goto close;
@@ -316,6 +370,7 @@ void SMTPSession::connect(ErrorCode * pError)
             } else {
                 r = mailsmtp_init(mSmtp);
             }
+            saveLastResponse();
             if (r == MAILSMTP_ERROR_STREAM) {
                 * pError = ErrorConnection;
                 goto close;
@@ -329,6 +384,7 @@ void SMTPSession::connect(ErrorCode * pError)
             
         default:
             r = mailsmtp_socket_connect(mSmtp, MCUTF8(hostname()), port());
+            saveLastResponse();
             if (r != MAILSMTP_NO_ERROR) {
                 * pError = ErrorConnection;
                 goto close;
@@ -340,6 +396,7 @@ void SMTPSession::connect(ErrorCode * pError)
             } else {
                 r = mailsmtp_init(mSmtp);
             }
+            saveLastResponse();
             if (r == MAILSMTP_ERROR_STREAM) {
                 * pError = ErrorConnection;
                 goto close;
@@ -386,6 +443,19 @@ void SMTPSession::disconnect()
     unsetup();
     
     mState = STATE_DISCONNECTED;
+}
+
+void SMTPSession::saveLastResponse()
+{
+    if (mSmtp != NULL) {
+        if (mSmtp->response != NULL) {
+            String * response = String::stringWithUTF8Characters(mSmtp->response);
+            MC_SAFE_REPLACE_COPY(String, mLastSMTPResponse, response);
+        }
+        if (mSmtp->response_code != 0) {
+            mLastSMTPResponseCode = mSmtp->response_code;
+        }
+    }
 }
 
 void SMTPSession::loginIfNeeded(ErrorCode * pError)
@@ -440,7 +510,14 @@ void SMTPSession::login(ErrorCode * pError)
         }
     }
 
-    switch (authType()) {
+    AuthType correctedAuthType = authType();
+    if (mOutlookServer) {
+        if (correctedAuthType == AuthTypeXOAuth2) {
+            correctedAuthType = AuthTypeXOAuth2Outlook;
+        }
+    }
+
+    switch (correctedAuthType) {
         case 0:
         default:
             r = mailesmtp_auth_sasl(mSmtp, "PLAIN",
@@ -554,6 +631,7 @@ void SMTPSession::login(ErrorCode * pError)
             break;
         }
     }
+    saveLastResponse();
     if (r == MAILSMTP_ERROR_STREAM) {
         * pError = ErrorConnection;
         mShouldDisconnect = true;
@@ -577,6 +655,7 @@ void SMTPSession::checkAccount(Address * from, ErrorCode * pError)
         return;
     }
     r = mailsmtp_mail(mSmtp, MCUTF8(from->mailbox()));
+    saveLastResponse();
     if (r == MAILSMTP_ERROR_STREAM) {
         * pError = ErrorConnection;
         mShouldDisconnect = true;
@@ -588,6 +667,7 @@ void SMTPSession::checkAccount(Address * from, ErrorCode * pError)
     }
     
     r = mailsmtp_rcpt(mSmtp, "email@invalid.com");
+    saveLastResponse();
     if (r == MAILSMTP_ERROR_STREAM) {
         * pError = ErrorConnection;
         mShouldDisconnect = true;
@@ -602,10 +682,18 @@ void SMTPSession::checkAccount(Address * from, ErrorCode * pError)
 }
 
 void SMTPSession::sendMessage(Address * from, Array * recipients, Data * messageData,
+        SMTPProgressCallback * callback, ErrorCode * pError)
+{
+    setSendingCancelled(false);
+    internalSendMessage(from, recipients, messageData, callback, pError);
+}
+
+void SMTPSession::internalSendMessage(Address * from, Array * recipients, Data * messageData,
     SMTPProgressCallback * callback, ErrorCode * pError)
 {
     clist * address_list;
     int r;
+    bool sendingCancelled;
 
     if (from == NULL) {
         * pError = ErrorNoSender;
@@ -617,7 +705,7 @@ void SMTPSession::sendMessage(Address * from, Array * recipients, Data * message
     }
     
     messageData = dataWithFilteredBcc(messageData);
-    
+
     mProgressCallback = callback;
     bodyProgress(0, messageData->length());
     
@@ -628,6 +716,17 @@ void SMTPSession::sendMessage(Address * from, Array * recipients, Data * message
     if (* pError != ErrorNone) {
         goto err;
     }
+    
+    CANCEL_LOCK();
+    sendingCancelled = mSendingCancelled;
+    CANCEL_UNLOCK();
+    if (sendingCancelled) {
+        goto err;
+    }
+    
+    CAN_CANCEL_LOCK();
+    mCanCancel = true;
+    CAN_CANCEL_UNLOCK();
 
     // disable DSN feature for more compatibility
     mSmtp->esmtp &= ~MAILSMTP_ESMTP_DSN;
@@ -639,27 +738,29 @@ void SMTPSession::sendMessage(Address * from, Array * recipients, Data * message
     }
     MCLog("send");
     if ((mSmtp->esmtp & MAILSMTP_ESMTP_PIPELINING) != 0) {
-        r = mailesmtp_send_quit(mSmtp, MCUTF8(from->mailbox()), 0, NULL,
-            address_list,
-            messageData->bytes(), messageData->length());
+        r = mailesmtp_send_quit_no_disconnect(mSmtp, MCUTF8(from->mailbox()), 0, NULL,
+                                              address_list,
+                                              messageData->bytes(), messageData->length());
+        CAN_CANCEL_LOCK();
+        mCanCancel = false;
+        CAN_CANCEL_UNLOCK();
+        if (mSmtp->stream != NULL) {
+            mailstream_close(mSmtp->stream);
+            mSmtp->stream = NULL;
+        }
         mShouldDisconnect = true;
     }
     else {
         r = mailesmtp_send(mSmtp, MCUTF8(from->mailbox()), 0, NULL,
             address_list,
             messageData->bytes(), messageData->length());
+        CAN_CANCEL_LOCK();
+        mCanCancel = false;
+        CAN_CANCEL_UNLOCK();
         mailsmtp_quit(mSmtp);
     }
     esmtp_address_list_free(address_list);
-
-    String * response;
-    int responseCode;
-
-    response = NULL;
-    if (mSmtp->response != NULL) {
-        response = String::stringWithUTF8Characters(mSmtp->response);
-    }
-    responseCode = mSmtp->response_code;
+    saveLastResponse();
 
     if ((r == MAILSMTP_ERROR_STREAM) || (r == MAILSMTP_ERROR_CONNECTION_REFUSED)) {
         * pError = ErrorConnection;
@@ -667,7 +768,7 @@ void SMTPSession::sendMessage(Address * from, Array * recipients, Data * message
         goto err;
     }
     else if (r == MAILSMTP_ERROR_EXCEED_STORAGE_ALLOCATION) {
-        if ((response != NULL) && (response->locationOfString(MCSTR("5.7.0")) != -1)) {
+        if ((mLastSMTPResponse != NULL) && (mLastSMTPResponse->locationOfString(MCSTR("5.7.0")) != -1)) {
             * pError = ErrorSendMessageIllegalAttachment;
         }
         else {
@@ -684,21 +785,27 @@ void SMTPSession::sendMessage(Address * from, Array * recipients, Data * message
         goto err;
     }
     else if (r != MAILSMTP_NO_ERROR) {
-        if ((responseCode == 550) && (response != NULL)) {
-            if (response->hasPrefix(MCSTR("5.3.4 "))) {
+        if ((mLastSMTPResponseCode == 550) && (mLastSMTPResponse != NULL)) {
+            if (mLastSMTPResponse->hasPrefix(MCSTR("5.3.4 "))) {
                 * pError = ErrorNeedsConnectToWebmail;
                 goto err;
             }
-            else if (response->hasPrefix(MCSTR("5.7.1 "))) {
+            else if (mLastSMTPResponse->hasPrefix(MCSTR("5.7.1 "))) {
                 * pError = ErrorSendMessageNotAllowed;
                 goto err;
             }
         }
+        else if (mLastSMTPResponseCode == 521 && mLastSMTPResponse->locationOfString(MCSTR("over the limit")) != -1) {
+            * pError = ErrorYahooSendMessageDailyLimitExceeded;
+            goto err;
+        }
+        else if (mLastSMTPResponseCode == 554 && mLastSMTPResponse->locationOfString(MCSTR("spam")) != -1) {
+            * pError = ErrorYahooSendMessageSpamSuspected;
+            goto err;
+        }
         
         * pError = ErrorSendMessage;
-        MC_SAFE_REPLACE_COPY(String, mLastSMTPResponse, response);
         mLastLibetpanError = r;
-        mLastSMTPResponseCode = responseCode;
         goto err;
     }
 
@@ -709,13 +816,29 @@ void SMTPSession::sendMessage(Address * from, Array * recipients, Data * message
     mProgressCallback = NULL;
 }
 
+void SMTPSession::sendMessage(Address * from, Array * recipients, String * messagePath,
+                              SMTPProgressCallback * callback, ErrorCode * pError)
+{
+    setSendingCancelled(false);
+    Data * messageData = Data::dataWithContentsOfFile(messagePath);
+    if (!messageData) {
+        * pError = ErrorFile;
+        return;
+    }
+
+    return internalSendMessage(from, recipients, messageData, callback, pError);
+}
+
+static void mmapStringDeallocator(char * bytes, unsigned int length) {
+    mmap_string_unref(bytes);
+}
+
 Data * SMTPSession::dataWithFilteredBcc(Data * data)
 {
     int r;
     size_t idx;
     struct mailimf_message * msg;
-    MMAPString * str;
-    
+
     idx = 0;
     r = mailimf_message_parse(data->bytes(), data->length(), &idx, &msg);
     if (r != MAILIMF_NO_ERROR) {
@@ -726,15 +849,16 @@ Data * SMTPSession::dataWithFilteredBcc(Data * data)
     int col = 0;
 
     int hasRecipient = 0;
-    str = mmap_string_new("");
+    bool bccWasActuallyRemoved = false;
     for(clistiter * cur = clist_begin(fields->fld_list) ; cur != NULL ; cur = clist_next(cur)) {
         struct mailimf_field * field = (struct mailimf_field *) clist_content(cur);
         if (field->fld_type == MAILIMF_FIELD_BCC) {
             mailimf_field_free(field);
             clist_delete(fields->fld_list, cur);
+            bccWasActuallyRemoved = true;
             break;
         }
-        else if ((field->fld_type == MAILIMF_FIELD_TO) || (field->fld_type == MAILIMF_FIELD_CC) || (field->fld_type == MAILIMF_FIELD_BCC)) {
+        else if ((field->fld_type == MAILIMF_FIELD_TO) || (field->fld_type == MAILIMF_FIELD_CC)) {
             hasRecipient = 1;
         }
     }
@@ -746,13 +870,24 @@ Data * SMTPSession::dataWithFilteredBcc(Data * data)
         struct mailimf_field * field = mailimf_field_new(MAILIMF_FIELD_TO, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, toField, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
         mailimf_fields_add(fields, field);
     }
-    mailimf_fields_write_mem(str, &col, fields);
-    mmap_string_append(str, "\n");
-    mmap_string_append_len(str, msg->msg_body->bd_text, msg->msg_body->bd_size);
-    
-    Data * result = Data::dataWithBytes(str->str, (unsigned int) str->len);
-    
-    mmap_string_free(str);
+
+    Data * result;
+    if (!hasRecipient || bccWasActuallyRemoved) {
+        MMAPString * str = mmap_string_new("");
+        mailimf_fields_write_mem(str, &col, fields);
+        mmap_string_append(str, "\n");
+        mmap_string_append_len(str, msg->msg_body->bd_text, msg->msg_body->bd_size);
+
+        mmap_string_ref(str);
+
+        result = Data::data();
+        result->takeBytesOwnership(str->str, (unsigned int) str->len, mmapStringDeallocator);
+    }
+    else {
+        // filter Bcc and modify To: only if necessary.
+        result = data;
+    }
+
     mailimf_message_free(msg);
     
     return result;
@@ -760,6 +895,7 @@ Data * SMTPSession::dataWithFilteredBcc(Data * data)
 
 void SMTPSession::sendMessage(Data * messageData, SMTPProgressCallback * callback, ErrorCode * pError)
 {
+    setSendingCancelled(false);
     AutoreleasePool * pool = new AutoreleasePool();
     MessageParser * parser = new MessageParser(messageData);
     Array * recipients = new Array();
@@ -784,6 +920,7 @@ void SMTPSession::sendMessage(Data * messageData, SMTPProgressCallback * callbac
 
 void SMTPSession::sendMessage(MessageBuilder * msg, SMTPProgressCallback * callback, ErrorCode * pError)
 {
+    setSendingCancelled(false);
     Array * recipients = new Array();
     if (msg->header()->to() != NULL) {
         recipients->addObjectsFromArray(msg->header()->to());
@@ -816,10 +953,26 @@ void SMTPSession::noop(ErrorCode * pError)
     }
     if (mSmtp->stream != NULL) {
         r = mailsmtp_noop(mSmtp);
+        saveLastResponse();
         if (r == MAILSMTP_ERROR_STREAM) {
             * pError = ErrorConnection;
         }
     }
+}
+
+void SMTPSession::cancelMessageSending()
+{
+    // main thread
+    
+    setSendingCancelled(true);
+    
+    CAN_CANCEL_LOCK();
+    if (mCanCancel) {
+        if (mSmtp != NULL && mSmtp->stream != NULL) {
+            mailstream_cancel(mSmtp->stream);
+        }
+    }
+    CAN_CANCEL_UNLOCK();
 }
 
 bool SMTPSession::isDisconnected()
@@ -827,12 +980,35 @@ bool SMTPSession::isDisconnected()
     return mState == STATE_DISCONNECTED;
 }
 
+void SMTPSession::lockConnectionLogger()
+{
+    pthread_mutex_lock(&mConnectionLoggerLock);
+}
+
+void SMTPSession::unlockConnectionLogger()
+{
+    pthread_mutex_unlock(&mConnectionLoggerLock);
+}
+
 void SMTPSession::setConnectionLogger(ConnectionLogger * logger)
 {
+    lockConnectionLogger();
     mConnectionLogger = logger;
+    unlockConnectionLogger();
 }
 
 ConnectionLogger * SMTPSession::connectionLogger()
+{
+    ConnectionLogger * result;
+
+    lockConnectionLogger();
+    result = connectionLoggerNoLock();
+    unlockConnectionLogger();
+
+    return result;
+}
+
+ConnectionLogger * SMTPSession::connectionLoggerNoLock()
 {
     return mConnectionLogger;
 }

@@ -326,6 +326,9 @@ void MessageHeader::setExtraHeader(String * name, String * object)
         mExtraHeaders = new HashMap();
     }
     removeExtraHeader(name);
+    if (object == NULL) {
+        return;
+    }
     mExtraHeaders->setObjectForKey(name, object);
 }
 
@@ -516,6 +519,10 @@ void MessageHeader::importIMFFields(struct mailimf_fields * fields)
         
         fieldName = field->fld_data.fld_optional_field->fld_name;
         fieldNameStr = String::stringWithUTF8Characters(fieldName);
+        if (fieldNameStr == NULL) {
+            continue;
+        }
+
         // Set only if this optional-field is not set
         if (extraHeaderValueForName(fieldNameStr) == NULL) {
             char * fieldValue;
@@ -523,7 +530,9 @@ void MessageHeader::importIMFFields(struct mailimf_fields * fields)
             
             fieldValue = field->fld_data.fld_optional_field->fld_value;
             fieldValueStr = String::stringByDecodingMIMEHeaderValue(fieldValue);
-            setExtraHeader(fieldNameStr, fieldValueStr);
+            if (fieldValueStr != NULL) {
+                setExtraHeader(fieldNameStr, fieldValueStr);
+            }
         }
     }
 }

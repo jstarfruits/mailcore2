@@ -16,6 +16,7 @@
 #include "MCNNTPFetchOverviewOperation.h"
 #include "MCNNTPCheckAccountOperation.h"
 #include "MCNNTPFetchServerTimeOperation.h"
+#include "MCNNTPPostOperation.h"
 #include "MCNNTPDisconnectOperation.h"
 #include "MCOperationQueueCallback.h"
 #include "MCConnectionLogger.h"
@@ -236,6 +237,24 @@ NNTPListNewsgroupsOperation * NNTPAsyncSession::listDefaultNewsgroupsOperation()
     return op;
 }
 
+NNTPPostOperation * NNTPAsyncSession::postMessageOperation(Data * messageData)
+{
+    NNTPPostOperation * op = new NNTPPostOperation();
+    op->setSession(this);
+    op->setMessageData(messageData);
+    op->autorelease();
+    return op;
+}
+
+NNTPPostOperation * NNTPAsyncSession::postMessageOperation(String * filename)
+{
+    NNTPPostOperation * op = new NNTPPostOperation();
+    op->setSession(this);
+    op->setMessageFilepath(filename);
+    op->autorelease();
+    return op;
+}
+
 NNTPOperation * NNTPAsyncSession::disconnectOperation()
 {
     NNTPDisconnectOperation * op = new NNTPDisconnectOperation();
@@ -266,13 +285,13 @@ void NNTPAsyncSession::setConnectionLogger(ConnectionLogger * logger)
 {
     pthread_mutex_lock(&mConnectionLoggerLock);
     mConnectionLogger = logger;
-    if (mConnectionLogger != NULL) {
+    pthread_mutex_unlock(&mConnectionLoggerLock);
+    if (logger != NULL) {
         mSession->setConnectionLogger(mInternalLogger);
     }
     else {
         mSession->setConnectionLogger(NULL);
     }
-    pthread_mutex_unlock(&mConnectionLoggerLock);
 }
 
 ConnectionLogger * NNTPAsyncSession::connectionLogger()

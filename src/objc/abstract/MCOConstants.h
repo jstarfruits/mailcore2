@@ -266,6 +266,8 @@ typedef NS_ENUM(NSInteger, MCOIMAPCapability) {
     MCOIMAPCapabilityId,
     /** LITERAL+ Capability.*/
     MCOIMAPCapabilityLiteralPlus,
+    /** MOVE Capability */
+    MCOIMAPCapabilityMove,
     /** MULTIAPPEND Capability.*/
     MCOIMAPCapabilityMultiAppend,
     /** NAMESPACE Capability.*/
@@ -413,9 +415,20 @@ typedef NS_ENUM(NSInteger, MCOErrorCode) {
     MCOErrorNoValidServerFound,
     /** Error while running custom command */
     MCOErrorCustomCommand,
+    /** Spam was suspected by server */
+    MCOErrorYahooSendMessageSpamSuspected,
+    /** Daily limit of sent messages was hit */
+    MCOErrorYahooSendMessageDailyLimitExceeded,
+    /** You need to login via the web browser first */
+    MCOErrorOutlookLoginViaWebBrowser,
     /** The count of all errors */
     MCOErrorCodeCount,
 };
+
+/** Error userInfo key for SMTP operations response string */
+#define MCOSMTPResponseKey @"MCOSMTPResponseKey"
+/** Error userInfo key for SMTP operations response code */
+#define MCOSMTPResponseCodeKey @"MCOSMTPResponseCodeKey"
 
 /** Here's the list of connection log types.*/
 typedef NS_ENUM(NSInteger, MCOConnectionLogType) {
@@ -445,5 +458,8 @@ typedef void (^MCOConnectionLogger)(void * connectionID, MCOConnectionLogType ty
  It's called when asynchronous operations stop/start running.
  */
 typedef void (^MCOOperationQueueRunningChangeBlock)(void);
+
+/** MCOIMAPResponseKey is a key for NSError userInfo dictionary, the value is string with the server response. */
+#define MCOIMAPResponseKey @"MCOIMAPResponseKey"
 
 #endif

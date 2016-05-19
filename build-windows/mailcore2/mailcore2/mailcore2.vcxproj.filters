@@ -375,6 +375,9 @@
     <ClInclude Include="..\..\..\src\async\imap\MCIMAPCopyMessagesOperation.h">
       <Filter>Source Files\async\imap</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\async\imap\MCIMAPMoveMessagesOperation.h">
+      <Filter>Source Files\async\imap</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\async\imap\MCIMAPCreateFolderOperation.h">
       <Filter>Source Files\async\imap</Filter>
     </ClInclude>
@@ -532,6 +535,9 @@
       <Filter>Source Files\async\nntp</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\async\nntp\MCNNTPListNewsgroupsOperation.h">
+      <Filter>Source Files\async\nntp</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\async\nntp\MCNNTPPostOperation.h">
       <Filter>Source Files\async\nntp</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\async\nntp\MCNNTPOperation.h">
@@ -782,6 +788,9 @@
     <ClCompile Include="..\..\..\src\async\imap\MCIMAPCopyMessagesOperation.cpp">
       <Filter>Source Files\async\imap</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\async\imap\MCIMAPMoveMessagesOperation.cpp">
+      <Filter>Source Files\async\imap</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\async\imap\MCIMAPCreateFolderOperation.cpp">
       <Filter>Source Files\async\imap</Filter>
     </ClCompile>
@@ -921,6 +930,9 @@
       <Filter>Source Files\async\nntp</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\async\nntp\MCNNTPListNewsgroupsOperation.cpp">
+      <Filter>Source Files\async\nntp</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\async\nntp\MCNNTPPostOperation.cpp">
       <Filter>Source Files\async\nntp</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\async\nntp\MCNNTPOperation.cpp">

@@ -21,6 +21,7 @@ namespace mailcore {
     class IMAPFetchFoldersOperation;
     class IMAPAppendMessageOperation;
     class IMAPCopyMessagesOperation;
+    class IMAPMoveMessagesOperation;
     class IMAPFetchMessagesOperation;
     class IMAPFetchContentOperation;
     class IMAPFetchParsedContentOperation;
@@ -41,6 +42,7 @@ namespace mailcore {
     class IMAPIdentity;
     class OperationQueueCallback;
     class IMAPCustomCommandOperation;
+    class IMAPCheckAccountOperation;
     
     class MAILCORE_EXPORT IMAPAsyncSession : public Object {
     public:
@@ -103,7 +105,11 @@ namespace mailcore {
         
         virtual IMAPIdentity * serverIdentity();
         virtual IMAPIdentity * clientIdentity();
+        virtual void setClientIdentity(IMAPIdentity * clientIdentity);
+
         virtual String * gmailUserDisplayName() DEPRECATED_ATTRIBUTE;
+
+        virtual bool isIdleEnabled();
         
         virtual IMAPFolderInfoOperation * folderInfoOperation(String * folder);
         virtual IMAPFolderStatusOperation * folderStatusOperation(String * folder);
@@ -119,8 +125,10 @@ namespace mailcore {
         virtual IMAPOperation * unsubscribeFolderOperation(String * folder);
         
         virtual IMAPAppendMessageOperation * appendMessageOperation(String * folder, Data * messageData, MessageFlag flags, Array * customFlags = NULL);
-        
+        virtual IMAPAppendMessageOperation * appendMessageOperation(String * folder, String * messagePath, MessageFlag flags, Array * customFlags = NULL);
+
         virtual IMAPCopyMessagesOperation * copyMessagesOperation(String * folder, IndexSet * uids, String * destFolder);
+        virtual IMAPMoveMessagesOperation * moveMessagesOperation(String * folder, IndexSet * uids, String * destFolder);
         
         virtual IMAPOperation * expungeOperation(String * folder);
         
@@ -158,7 +166,7 @@ namespace mailcore {
         virtual IMAPIdentityOperation * identityOperation(IMAPIdentity * identity);
         
         virtual IMAPOperation * connectOperation();
-        virtual IMAPOperation * checkAccountOperation();
+        virtual IMAPCheckAccountOperation * checkAccountOperation();
         virtual IMAPOperation * disconnectOperation();
         
         virtual IMAPCapabilityOperation * capabilityOperation();
@@ -202,9 +210,20 @@ namespace mailcore {
         dispatch_queue_t mDispatchQueue;
 #endif
         String * mGmailUserDisplayName;
-        
+        bool mIdleEnabled;
+
+        /*! Create new IMAP session */
         virtual IMAPAsyncConnection * session();
+        /*! Returns a new or an existing session, it is best suited to run the IMAP command
+         in the specified folder. */
         virtual IMAPAsyncConnection * matchingSessionForFolder(String * folder);
+        /*! Returns a session with minimum operation queue among already created ones.
+         If @param filterByFolder is true, then function filters sessions with
+         predicate (lastFolder() EQUALS TO @param folder). In case of @param folder is NULL
+         the function would search a session among non-selected ones. */
+        virtual IMAPAsyncConnection * sessionWithMinQueue(bool filterByFolder, String * folder);
+        /*! Returns existant or new session with empty operation queue, if it can.
+         Otherwise, returns the session with the minimum size of the operation queue. */
         virtual IMAPAsyncConnection * availableSession();
         virtual IMAPMessageRenderingOperation * renderingOperation(IMAPMessage * message,
                                                                    String * folder,

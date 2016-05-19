@@ -38,7 +38,9 @@ public:
     
     virtual void log(void * sender, ConnectionLogType logType, Data * data)
     {
-        [mSession _logWithSender:sender connectionType:(MCOConnectionLogType)logType data:MCO_TO_OBJC(data)];
+        @autoreleasepool {
+            [mSession _logWithSender:sender connectionType:(MCOConnectionLogType)logType data:MCO_TO_OBJC(data)];
+        }
     }
 
     virtual void queueStartRunning()
@@ -69,7 +71,7 @@ private:
     return _session;
 }
 
-- (id)init {
+- (instancetype) init {
     self = [super init];
     
     _session = new mailcore::SMTPAsyncSession();
@@ -165,6 +167,19 @@ MCO_OBJC_SYNTHESIZE_SCALAR(dispatch_queue_t, dispatch_queue_t, setDispatchQueue,
     MCO_NATIVE_INSTANCE->sendMessageOperation(MCO_FROM_OBJC(Address, from),
                                               MCO_FROM_OBJC(Array, recipients),
                                               [messageData mco_mcData]);
+    MCOSMTPSendOperation * result = [[[MCOSMTPSendOperation alloc] initWithMCOperation:coreOp] autorelease];
+    [result setSession:self];
+    return result;
+}
+
+- (MCOSMTPSendOperation *) sendOperationWithContentsOfFile:(NSString *)path
+                                                      from:(MCOAddress *)from
+                                                recipients:(NSArray *)recipients
+{
+    mailcore::SMTPOperation * coreOp =
+    MCO_NATIVE_INSTANCE->sendMessageOperation(MCO_FROM_OBJC(Address, from),
+                                              MCO_FROM_OBJC(Array, recipients),
+                                              MCO_FROM_OBJC(String, path));
     MCOSMTPSendOperation * result = [[[MCOSMTPSendOperation alloc] initWithMCOperation:coreOp] autorelease];
     [result setSession:self];
     return result;

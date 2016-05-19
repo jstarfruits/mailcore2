@@ -107,6 +107,7 @@ namespace mailcore {
         IMAPCapabilityIdle,
         IMAPCapabilityId,
         IMAPCapabilityLiteralPlus,
+        IMAPCapabilityMove,
         IMAPCapabilityMultiAppend,
         IMAPCapabilityNamespace,
         IMAPCapabilityQResync,
@@ -131,6 +132,7 @@ namespace mailcore {
         IMAPCapabilityAuthSKey,
         IMAPCapabilityAuthSRP,
         IMAPCapabilityXOAuth2,
+        IMAPCapabilityXYMHighestModseq,
         IMAPCapabilityGmail,
     };
     
@@ -253,6 +255,9 @@ namespace mailcore {
         ErrorServerDate,
         ErrorNoValidServerFound,
         ErrorCustomCommand,
+        ErrorYahooSendMessageSpamSuspected,
+        ErrorYahooSendMessageDailyLimitExceeded,
+        ErrorOutlookLoginViaWebBrowser,
     };
     
     enum PartType {
