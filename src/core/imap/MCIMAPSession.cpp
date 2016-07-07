@@ -27,8 +27,62 @@
 #include "MCCertificateUtils.h"
 #include "MCIMAPIdentity.h"
 #include "MCLibetpan.h"
+#include "MCDataStreamDecoder.h"
 
 using namespace mailcore;
+
+class LoadByChunkProgress : public Object, public IMAPProgressCallback {
+public:
+    LoadByChunkProgress();
+    virtual ~LoadByChunkProgress();
+
+    virtual void setOffset(uint32_t offset);
+    virtual void setEstimatedSize(uint32_t estimatedSize);
+    virtual void setProgressCallback(IMAPProgressCallback * progressCallback);
+
+    virtual void bodyProgress(IMAPSession * session, unsigned int current, unsigned int maximum);
+
+private:
+    uint32_t mOffset;
+    uint32_t mEstimatedSize;
+    IMAPProgressCallback * mProgressCallback; // non retained
+};
+
+LoadByChunkProgress::LoadByChunkProgress()
+{
+    mOffset = 0;
+    mEstimatedSize = 0;
+    mProgressCallback = NULL;
+}
+
+LoadByChunkProgress::~LoadByChunkProgress()
+{
+}
+
+void LoadByChunkProgress::setOffset(uint32_t offset)
+{
+    mOffset = offset;
+}
+
+void LoadByChunkProgress::setEstimatedSize(uint32_t estimatedSize)
+{
+    mEstimatedSize = estimatedSize;
+}
+
+void LoadByChunkProgress::setProgressCallback(IMAPProgressCallback * progressCallback)
+{
+    mProgressCallback = progressCallback;
+}
+
+void LoadByChunkProgress::bodyProgress(IMAPSession * session, unsigned int current, unsigned int maximum)
+{
+    // In case of loading attachment by chunks we need report overall progress
+    if (mEstimatedSize > 0 && mEstimatedSize > maximum) {
+        maximum = mEstimatedSize;
+        current += mOffset;
+    }
+    mProgressCallback->bodyProgress(session, current, maximum);
+}
 
 enum {
     STATE_DISCONNECTED,
@@ -356,6 +410,7 @@ void IMAPSession::init()
     mShouldDisconnect = false;
     mLoginResponse = NULL;
     mGmailUserDisplayName = NULL;
+    mUnparsedResponseData = NULL;
 }
 
 IMAPSession::IMAPSession()
@@ -365,6 +420,7 @@ IMAPSession::IMAPSession()
 
 IMAPSession::~IMAPSession()
 {
+    MC_SAFE_RELEASE(mUnparsedResponseData);
     MC_SAFE_RELEASE(mGmailUserDisplayName);
     MC_SAFE_RELEASE(mLoginResponse);
     MC_SAFE_RELEASE(mClientIdentity);
@@ -483,6 +539,11 @@ bool IMAPSession::isVoIPEnabled()
 String * IMAPSession::loginResponse()
 {
     return mLoginResponse;
+}
+
+Data * IMAPSession::unparsedResponseData()
+{
+    return mUnparsedResponseData;
 }
 
 static bool hasError(int errorCode)
@@ -716,7 +777,10 @@ void IMAPSession::login(ErrorCode * pError)
     MCLog("login");
     
     MCAssert(mState == STATE_CONNECTED);
-    
+
+    MC_SAFE_RELEASE(mLoginResponse);
+    MC_SAFE_RELEASE(mUnparsedResponseData);
+
     if (mImap->imap_connection_info != NULL) {
         if (mImap->imap_connection_info->imap_capability != NULL) {
             mailimap_capability_data_free(mImap->imap_connection_info->imap_capability);
@@ -832,6 +896,13 @@ void IMAPSession::login(ErrorCode * pError)
     else if (r == MAILIMAP_ERROR_PARSE) {
         mShouldDisconnect = true;
         * pError = ErrorParse;
+
+        Data * unparsed_response = Data::data();
+        if (mImap->imap_stream_buffer != NULL) {
+            unparsed_response = Data::dataWithBytes(mImap->imap_stream_buffer->str, (unsigned int) mImap->imap_stream_buffer->len);
+        }
+        MC_SAFE_REPLACE_RETAIN(Data, mUnparsedResponseData, unparsed_response);
+
         return;
     }
     else if (hasError(r)) {
@@ -1209,13 +1280,12 @@ IMAPFolderStatus * IMAPSession::folderStatus(String * folder, ErrorCode * pError
                     }
                 }
             }            
-        
-        
+
+        mailimap_mailbox_data_status_free(status);
     }
-        
+
     mailimap_status_att_list_free(status_att_list);
-    mailimap_mailbox_data_status_free(status);
-    
+
     return fs;
 }
 
@@ -2796,8 +2866,9 @@ static void nstringDeallocator(char * bytes, unsigned int length) {
     mailimap_nstring_free(bytes);
 };
 
-Data * IMAPSession::fetchMessageAttachment(String * folder, bool identifier_is_uid,
+Data * IMAPSession::fetchNonDecodedMessageAttachment(String * folder, bool identifier_is_uid,
                                            uint32_t identifier, String * partID,
+                                           bool wholePart, uint32_t offset, uint32_t length,
                                            Encoding encoding, IMAPProgressCallback * progressCallback, ErrorCode * pError)
 {
     struct mailimap_fetch_type * fetch_type;
@@ -2810,21 +2881,21 @@ Data * IMAPSession::fetchMessageAttachment(String * folder, bool identifier_is_u
     char * text = NULL;
     size_t text_length = 0;
     Data * data;
-    
+
     selectIfNeeded(folder, pError);
     if (* pError != ErrorNone)
         return NULL;
-    
+
     mProgressItemsCount = 0;
     mProgressCallback = progressCallback;
     bodyProgress(0, 0);
-    
+
     partIDArray = partID->componentsSeparatedByString(MCSTR("."));
     sec_list = clist_new();
     for(unsigned int i = 0 ; i < partIDArray->count() ; i ++) {
         uint32_t * value;
         String * element;
-        
+
         element = (String *) partIDArray->objectAtIndex(i);
         value = (uint32_t *) malloc(sizeof(* value));
         * value = element->intValue();
@@ -2832,7 +2903,12 @@ Data * IMAPSession::fetchMessageAttachment(String * folder, bool identifier_is_u
     }
     section_part = mailimap_section_part_new(sec_list);
     section = mailimap_section_new_part(section_part);
-    fetch_att = mailimap_fetch_att_new_body_peek_section(section);
+    if (wholePart) {
+        fetch_att = mailimap_fetch_att_new_body_peek_section(section);
+    }
+    else {
+        fetch_att = mailimap_fetch_att_new_body_peek_section_partial(section, offset, length);
+    }
     fetch_type = mailimap_fetch_type_new_fetch_att(fetch_att);
 
 #ifdef LIBETPAN_HAS_MAILIMAP_RAMBLER_WORKAROUND
@@ -2868,10 +2944,20 @@ Data * IMAPSession::fetchMessageAttachment(String * folder, bool identifier_is_u
 
     data = Data::data();
     data->takeBytesOwnership(text, (unsigned int) text_length, nstringDeallocator);
-    data = data->decodedDataUsingEncoding(encoding);
     
     * pError = ErrorNone;
     
+    return data;
+}
+
+Data * IMAPSession::fetchMessageAttachment(String * folder, bool identifier_is_uid,
+                                           uint32_t identifier, String * partID,
+                                           Encoding encoding, IMAPProgressCallback * progressCallback, ErrorCode * pError)
+{
+    Data * data = fetchNonDecodedMessageAttachment(folder, identifier_is_uid, identifier, partID, true, 0, 0, encoding, progressCallback, pError);
+    if (data) {
+        data = data->decodedDataUsingEncoding(encoding);
+    }
     return data;
 }
 
@@ -2885,6 +2971,129 @@ Data * IMAPSession::fetchMessageAttachmentByNumber(String * folder, uint32_t num
                                               Encoding encoding, IMAPProgressCallback * progressCallback, ErrorCode * pError)
 {
     return fetchMessageAttachment(folder, false, number, partID, encoding, progressCallback, pError);
+}
+
+void IMAPSession::fetchMessageAttachmentToFileByChunksByUID(String * folder, uint32_t uid, String * partID,
+                                                    uint32_t estimatedSize, Encoding encoding,
+                                                    String * outputFile, uint32_t chunkSize,
+                                                    IMAPProgressCallback * progressCallback, ErrorCode * pError)
+{
+    DataStreamDecoder * decoder = new DataStreamDecoder();
+    decoder->setEncoding(encoding);
+    decoder->setFilename(outputFile);
+
+    int nRetries = 0;
+    int const maxRetries = 3;
+    ErrorCode error = ErrorNone;
+    uint32_t offset = 0;
+    while (1) {
+        AutoreleasePool * pool = new AutoreleasePool();
+
+        LoadByChunkProgress * chunkProgressCallback = new LoadByChunkProgress();
+        chunkProgressCallback->setOffset(offset);
+        chunkProgressCallback->setEstimatedSize(estimatedSize);
+        chunkProgressCallback->setProgressCallback(progressCallback);
+
+        Data * data = fetchNonDecodedMessageAttachment(folder, true, uid, partID, false, offset, chunkSize, encoding, chunkProgressCallback, &error);
+
+        MC_SAFE_RELEASE(chunkProgressCallback);
+
+        if (error != ErrorNone) {
+            pool->release();
+            if ((error == ErrorConnection || error == ErrorParse) && nRetries < maxRetries) {
+                error = ErrorNone;
+                nRetries++;
+                continue;
+            }
+            break;
+        } else {
+            nRetries = 0;
+        }
+
+        if (data == NULL) {
+            break;
+        }
+
+        uint32_t encodedSize = data->length();
+        if (encodedSize == 0) {
+            pool->release();
+            break;
+        }
+
+        error = decoder->appendData(data);
+
+        pool->release();
+
+        if (error != ErrorNone) {
+            break;
+        }
+
+        offset += encodedSize;
+
+        // Try detect is this chunk last.
+        // Estimated size (extracted from BODYSTRUCTURE info) may be incorrect.
+        // Also, server may return chunk with size less than requested.
+        // So this detection is some tricky.
+        bool endOfPart = ((encodedSize == 0) ||
+                          (estimatedSize > 0 && (estimatedSize <= offset) && (encodedSize != chunkSize)) ||
+                          (estimatedSize == 0 && encodedSize < chunkSize));
+        if (endOfPart) {
+            break;
+        }
+    }
+
+    if (error == ErrorNone) {
+        decoder->flushData();
+    }
+
+    MC_SAFE_RELEASE(decoder);
+
+    * pError = error;
+}
+
+static bool msg_body_handler(int msg_att_type, struct mailimap_msg_att_body_section * section,
+                             const char * bytes, size_t len, void * context)
+{
+    DataStreamDecoder * decoder = (DataStreamDecoder *)context;
+
+    AutoreleasePool * pool = new AutoreleasePool();
+
+    Data * data = Data::dataWithBytes(bytes, (unsigned int) len);
+    ErrorCode error = decoder->appendData(data);
+
+    pool->release();
+
+    return error == ErrorNone;
+}
+
+void IMAPSession::fetchMessageAttachmentToFileByUID(String * folder, uint32_t uid, String * partID,
+                                                    Encoding encoding, String * outputFile,
+                                                    IMAPProgressCallback * progressCallback, ErrorCode * pError)
+{
+    DataStreamDecoder * decoder = new DataStreamDecoder();
+    decoder->setEncoding(encoding);
+    decoder->setFilename(outputFile);
+
+    ErrorCode error = ErrorNone;
+    selectIfNeeded(folder, &error);
+    if (error != ErrorNone) {
+        * pError = error;
+        return;
+    }
+
+    mailimap_set_msg_body_handler(mImap, msg_body_handler, decoder);
+
+    fetchNonDecodedMessageAttachment(folder, true, uid, partID, true, 0, 0, encoding, progressCallback, &error);
+
+    mailimap_set_msg_body_handler(mImap, NULL, NULL);
+
+    if (error == ErrorNone) {
+        error = decoder->flushData();
+    }
+
+    MC_SAFE_RELEASE(decoder);
+
+    * pError = error;
 }
 
 IndexSet * IMAPSession::search(String * folder, IMAPSearchKind kind, String * searchString, ErrorCode * pError)
@@ -2931,6 +3140,56 @@ IndexSet * IMAPSession::search(String * folder, IMAPSearchKind kind, String * se
         case IMAPSearchKindContent:
         {
             expr = IMAPSearchExpression::searchContent(searchString);
+            break;
+        }
+        case IMAPSearchKindRead:
+        {
+            expr = IMAPSearchExpression::searchRead();
+            break;
+        }
+        case IMAPSearchKindUnread:
+        {
+            expr = IMAPSearchExpression::searchUnread();
+            break;
+        }
+        case IMAPSearchKindFlagged:
+        {
+            expr = IMAPSearchExpression::searchFlagged();
+            break;
+        }
+        case IMAPSearchKindUnflagged:
+        {
+            expr = IMAPSearchExpression::searchUnflagged();
+            break;
+        }
+        case IMAPSearchKindAnswered:
+        {
+            expr = IMAPSearchExpression::searchAnswered();
+            break;
+        }
+        case IMAPSearchKindUnanswered:
+        {
+            expr = IMAPSearchExpression::searchUnanswered();
+            break;
+        }
+        case IMAPSearchKindDraft:
+        {
+            expr = IMAPSearchExpression::searchDraft();
+            break;
+        }
+        case IMAPSearchKindUndraft:
+        {
+            expr = IMAPSearchExpression::searchUndraft();
+            break;
+        }
+        case IMAPSearchKindDeleted:
+        {
+            expr = IMAPSearchExpression::searchDeleted();
+            break;
+        }
+        case IMAPSearchKindSpam:
+        {
+            expr = IMAPSearchExpression::searchSpam();
             break;
         }
         default:

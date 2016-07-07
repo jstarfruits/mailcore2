@@ -54,7 +54,7 @@ void SMTPSession::init()
     pthread_mutex_init(&mCancelLock, NULL);
     pthread_mutex_init(&mCanCancelLock, NULL);
 
-    mOutlookServer = true;
+    mOutlookServer = false;
 }
 
 SMTPSession::SMTPSession()
@@ -484,9 +484,14 @@ void SMTPSession::login(ErrorCode * pError)
     }
 
     if (authType() == 0) {
+#if TARGET_IPHONE_SIMULATOR || TARGET_OS_IPHONE
+        if (0) {
+        }
+#else
         if (mSmtp->auth & MAILSMTP_AUTH_DIGEST_MD5) {
             setAuthType((AuthType) (authType() | AuthTypeSASLDIGESTMD5));
         }
+#endif
         else if (mSmtp->auth & MAILSMTP_AUTH_CRAM_MD5) {
             setAuthType((AuthType) (authType() | AuthTypeSASLCRAMMD5));
         }
@@ -704,7 +709,9 @@ void SMTPSession::internalSendMessage(Address * from, Array * recipients, Data *
         return;
     }
     
-    messageData = dataWithFilteredBcc(messageData);
+    if (!this->mOutlookServer) {
+        messageData = dataWithFilteredBcc(messageData);
+    }
 
     mProgressCallback = callback;
     bodyProgress(0, messageData->length());
