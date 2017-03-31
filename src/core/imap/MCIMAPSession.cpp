@@ -396,6 +396,8 @@ void IMAPSession::init()
     mFirstUnseenUid = 0;
     mYahooServer = false;
     mRamblerRuServer = false;
+    mHermesServer = false;
+    mQipServer = false;
     mLastFetchedSequenceNumber = 0;
     mCurrentFolder = NULL;
     pthread_mutex_init(&mIdleLock, NULL);
@@ -642,11 +644,16 @@ void IMAPSession::connect(ErrorCode * pError)
     int r;
     
     setup();
-    
+
     MCLog("connect %s", MCUTF8DESC(this));
-    
+
     MCAssert(mState == STATE_DISCONNECTED);
-    
+
+    if (mHostname == NULL) {
+        * pError = ErrorConnection;
+        goto close;
+    }
+
     switch (mConnectionType) {
         case ConnectionTypeStartTLS:
         MCLog("STARTTLS connect");
@@ -715,6 +722,8 @@ void IMAPSession::connect(ErrorCode * pError)
             mNamespaceEnabled = true;
         }
         mRamblerRuServer = (mHostname->locationOfString(MCSTR(".rambler.ru")) != -1);
+        mHermesServer = (mWelcomeString->locationOfString(MCSTR("Hermes")) != -1);
+        mQipServer = (mWelcomeString->locationOfString(MCSTR("QIP IMAP server")) != -1);
     }
     
     mState = STATE_CONNECTED;
@@ -3919,12 +3928,23 @@ void IMAPSession::storeFlagsAndCustomFlags(String * folder, bool identifier_is_u
             store_att_flags = mailimap_store_att_flags_new_set_flags_silent(flag_list);
             break;
         }
+
+#ifdef LIBETPAN_HAS_MAILIMAP_QIP_WORKAROUND
+        if (mQipServer) {
+            mailimap_set_qip_workaround_enabled(mImap, 1);
+        }
+#endif
+
         if (identifier_is_uid) {
             r = mailimap_uid_store(mImap, current_set, store_att_flags);
         }
         else {
             r = mailimap_store(mImap, current_set, store_att_flags);
         }
+
+#ifdef LIBETPAN_HAS_MAILIMAP_QIP_WORKAROUND
+        mailimap_set_qip_workaround_enabled(mImap, 0);
+#endif
 
         if (r == MAILIMAP_ERROR_STREAM) {
             mShouldDisconnect = true;
@@ -4227,8 +4247,13 @@ void IMAPSession::applyCapabilities(IndexSet * capabilities)
     if (capabilities->containsIndex(IMAPCapabilityXOAuth2)) {
         mXOauth2Enabled = true;
     }
-    if (capabilities->containsIndex(IMAPCapabilityNamespace)) {
-        mNamespaceEnabled = true;
+    if (mHermesServer) {
+        // Hermes server improperly advertise a namespace capability.
+    }
+    else {
+        if (capabilities->containsIndex(IMAPCapabilityNamespace)) {
+            mNamespaceEnabled = true;
+        }
     }
     if (capabilities->containsIndex(IMAPCapabilityCompressDeflate)) {
         mCompressionEnabled = true;
